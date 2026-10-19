@@ -35,6 +35,9 @@ import { readSubscription, claimBonus, OFFLINE_HINT } from "./lib/subscription.m
 const PROVIDER = "officeace";
 const CLIENT_BASE = `https://officeace.local/v1`; // 占位; 真实请求由 loader 的 fetch 接管
 
+// magpie 不落库 authorize() 的 accountId(api 类方法), 插件自己写一次就够
+let accountPersisted = false;
+
 // ── 模型能力表 ─────────────────────────────────────────────────────────
 // 依据 OfficeAce 自带模型目录里的 labels / capabilities
 // (packages/api/dist/index.js 的模型元数据: "Function Call" / "198K" / "1M" 等)
@@ -383,17 +386,20 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
           placeholder: "留空 = 自动读取 ~/.office-claw/session.cookie",
           async authorize(inputs) {
             const given = String(inputs?.key ?? "").trim();
-            if (given) return { type: "success", key: given };
 
             // 直连链路只依赖磁盘上的网关凭据, 不需要 OfficeAce 正在运行;
             // 登录态(oc_sid)只有智能体兜底链路和积分/签到用得上, 拿不到就降级。
             const gw = discoverGateway();
             let cookie = "";
             let cookieNote = "";
-            try {
-              cookie = discoverSession().cookie;
-            } catch (err) {
-              cookieNote = err?.message ?? String(err);
+            if (given) {
+              cookie = given;
+            } else {
+              try {
+                cookie = discoverSession().cookie;
+              } catch (err) {
+                cookieNote = err?.message ?? String(err);
+              }
             }
 
             if (!gw.authorization && !cookie) {
@@ -404,6 +410,7 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
             }
 
             // 向本地 API 问一下账号名, 让 magpie 显示 "某某" 而不是 cookie 末四位。
+            // 手动粘贴的 cookie 也走这条, 不然那一路永远只有 "API key"。
             // App 没开也继续(直连不需要它), 只是 accountId 留空。
             let accountId = "";
             let session = cookie ? "ok" : `unavailable: ${cookieNote}`;
@@ -448,9 +455,27 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
           log.warn(`读取 OfficeAce 登录态失败(仅智能体链路需要): ${err?.message ?? err}`);
         }
         const gw = discoverGateway();
-        const client = makeClient(cookie);
+        // 注意别叫 client: 外层那个是 magpie 的运行期 client, 有 .auth.set
+        const oa = makeClient(cookie);
 
         log.info(`网关直连: ${gw.base} (凭据来源 ${gw.source})`);
+
+        // magpie 不会把 authorize() 返回的 accountId 落库(api 类方法),
+        // 得插件自己写一次; 只试一次, 免得每个请求都写盘。
+        if (!accountPersisted && client?.auth?.set && cookie) {
+          accountPersisted = true;
+          try {
+            const info = await oa.isLogin();
+            const name = info.data?.islogin ? String(info.data.userName ?? "").trim() : "";
+            if (name && name !== String(auth?.accountId ?? "")) {
+              await client.auth.set({
+                path: { id: PROVIDER },
+                body: { ...auth, accountId: name },
+              });
+              log.info(`账号名已记录: ${name}`);
+            }
+          } catch {}
+        }
 
         return {
           baseURL: CLIENT_BASE,
@@ -487,7 +512,7 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
             try {
               if (route.kind === "agent") {
                 return await callAgent({
-                  client,
+                  client: oa,
                   route,
                   body,
                   wantStream,
