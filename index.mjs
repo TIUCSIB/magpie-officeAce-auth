@@ -386,7 +386,7 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
             if (given) return { type: "success", key: given };
 
             // 直连链路只依赖磁盘上的网关凭据, 不需要 OfficeAce 正在运行;
-            // 登录态(oc_sid)只有智能体兜底链路才用得上, 拿不到就降级。
+            // 登录态(oc_sid)只有智能体兜底链路和积分/签到用得上, 拿不到就降级。
             const gw = discoverGateway();
             let cookie = "";
             let cookieNote = "";
@@ -403,13 +403,36 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
               };
             }
 
+            // 向本地 API 问一下账号名, 让 magpie 显示 "某某" 而不是 cookie 末四位。
+            // App 没开也继续(直连不需要它), 只是 accountId 留空。
+            let accountId = "";
+            let session = cookie ? "ok" : `unavailable: ${cookieNote}`;
+            let needsReauth = false;
+            if (cookie) {
+              try {
+                const info = await makeClient(cookie).isLogin();
+                const d = info.data;
+                if (d?.islogin) {
+                  accountId = String(d.userName ?? "").trim();
+                  needsReauth = d.needsReauth === true;
+                  if (needsReauth) session = "needs-reauth";
+                } else if (d) {
+                  session = "not-logged-in";
+                }
+              } catch {
+                session = "local-api-unreachable";
+              }
+            }
+
             return {
               type: "success",
               key: cookie || "auto",
+              ...(accountId ? { accountId } : {}),
               metadata: {
                 gateway: gw.base,
                 gatewayAuth: gw.source,
-                ...(cookie ? { session: "ok" } : { session: `unavailable: ${cookieNote}` }),
+                session,
+                ...(needsReauth ? { needsReauth: true } : {}),
               },
             };
           },
@@ -545,6 +568,12 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
       if (sub.plan) {
         const until = sub.expiresAt ? ` · 至 ${String(sub.expiresAt).slice(0, 10)}` : "";
         windows.push({ name: "套餐", used: 0, display: `${sub.plan}${until}`, aside: true });
+      }
+
+      if (sub.account?.loggedOut) {
+        windows.push({ name: "登录态", used: 0, display: "未登录，请打开 OfficeAce 登录", aside: true });
+      } else if (sub.account?.needsReauth) {
+        windows.push({ name: "登录态", used: 0, display: "已失效，请重新登录 OfficeAce", aside: true });
       }
 
       return {
