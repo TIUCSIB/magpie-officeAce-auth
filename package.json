@@ -1,0 +1,25 @@
+{
+  "name": "magpie-officeace-auth",
+  "version": "0.2.0",
+  "description": "magpie provider plugin: OfficeAce (local desktop agent) as an OpenAI-compatible provider — direct to its Huawei MaaS gateway, with the agent path as fallback",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "lib/", "tools/"],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "officeace",
+    "office-claw",
+    "huawei-maas",
+    "modelarts",
+    "auth",
+    "provider",
+    "openai-compatible"
+  ],
+  "license": "MIT",
+  "magpie": {
+    "maxConcurrency": 4,
+    "icon": "https://www.officeace.cn/favicon.ico"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+*.log
+
+# OfficeAce 网关凭据的本机私有兜底 —— 等价于一对 AK/SK, 不进仓库
+lib/gateway-auth.local.json
+
+# 抓包产物
+capture/out/
+capture/__pycache__/
+__pycache__/
