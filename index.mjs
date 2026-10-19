@@ -383,16 +383,19 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
         {
           type: "api",
           label: "OfficeAce 本机登录态",
-          placeholder: "留空 = 自动读取 ~/.office-claw/session.cookie",
+          placeholder: "填 auto 自动读取本机登录态；或粘贴 oc_sid",
           async authorize(inputs) {
             const given = String(inputs?.key ?? "").trim();
+            // magpie 的登录框不接受空值, 所以给一个显式的 "auto";
+            // 留空也按 auto 处理, 免得宿主行为不一致时卡住。
+            const useAuto = !given || /^(auto|本机|自动)$/i.test(given);
 
             // 直连链路只依赖磁盘上的网关凭据, 不需要 OfficeAce 正在运行;
             // 登录态(oc_sid)只有智能体兜底链路和积分/签到用得上, 拿不到就降级。
             const gw = discoverGateway();
             let cookie = "";
             let cookieNote = "";
-            if (given) {
+            if (!useAuto) {
               cookie = given;
             } else {
               try {
@@ -433,7 +436,10 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
 
             return {
               type: "success",
-              key: cookie || "auto",
+              // auto 路径回一个稳定哨兵, 不回解出来的 cookie ——
+              // 否则 cookie 每轮换一次, magpie 就多出一个账号, 模型挑选也跟着重置。
+              // resolveCookie() 会在真正用到时再解析成当前 cookie。
+              key: useAuto ? "auto" : cookie,
               ...(accountId ? { accountId } : {}),
               metadata: {
                 gateway: gw.base,
