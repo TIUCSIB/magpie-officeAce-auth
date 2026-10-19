@@ -20,6 +20,11 @@
   "license": "MIT",
   "magpie": {
     "maxConcurrency": 4,
-    "icon": "https://www.officeace.cn/favicon.ico"
+    "icon": "https://www.officeace.cn/favicon.ico",
+    "options": {
+      "signin": true,
+      "signinHour": null,
+      "signinOnUsage": false
+    }
   }
 }

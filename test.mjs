@@ -228,5 +228,46 @@ if (withAgent) {
   check("智能体链路可用", res.status === 200 && typeof j.choices?.[0]?.message?.content === "string");
 }
 
+console.log("\n== 积分 / 签到 (需要 OfficeAce 在运行) ==");
+{
+  const getAuth = async () => ({ type: "api", key: authz.key });
+
+  let usage = null;
+  try {
+    usage = await hooks.usage(getAuth);
+  } catch (err) {
+    usage = { error: err?.message ?? String(err), windows: [] };
+  }
+
+  if (usage.error) {
+    console.log(`  跳过: ${usage.error}`);
+    check("离线时优雅降级(有 error 无崩溃)", Array.isArray(usage.windows) && usage.windows.length === 0);
+  } else {
+    console.log(`  balance = ${usage.balance}`);
+    for (const w of usage.windows) console.log(`    · ${w.name}: ${w.display} (used=${w.used}%)`);
+    check("有 balance", typeof usage.balance === "string" && usage.balance.length > 0);
+    check("有积分余额窗口", usage.windows.some((w) => w.name === "积分余额"));
+    check("used 是 0-100 的百分比", usage.windows.every((w) => w.used >= 0 && w.used <= 100));
+    check("窗口都有 name/display", usage.windows.every((w) => w.name && w.display));
+  }
+
+  // 签到: 服务端幂等, 重复调只会得到「今日已签到」
+  const outcomes = [];
+  for (let i = 0; i < 2; i++) {
+    try {
+      outcomes.push(await hooks.checkin(getAuth));
+    } catch (err) {
+      outcomes.push({ error: err?.message ?? String(err) });
+    }
+  }
+  console.log(`  checkin: ${outcomes.map((o) => JSON.stringify(o)).join(" | ")}`);
+  if (outcomes[0].error) {
+    check("离线时 checkin 抛错(让宿主重试)", Boolean(outcomes[0].error));
+  } else {
+    check("checkin 返回 outcome", typeof outcomes[0].outcome === "string");
+    check("签到幂等(两次结果一致)", JSON.stringify(outcomes[0]) === JSON.stringify(outcomes[1]));
+  }
+}
+
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
 process.exit(fail ? 1 : 0);
