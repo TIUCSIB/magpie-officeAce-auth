@@ -4,7 +4,11 @@
   "description": "magpie provider plugin: OfficeAce (local desktop agent) as an OpenAI-compatible provider — direct to its Huawei MaaS gateway, with the agent path as fallback",
   "type": "module",
   "main": "./index.mjs",
-  "files": ["index.mjs", "lib/", "tools/"],
+  "files": [
+    "index.mjs",
+    "lib/",
+    "tools/"
+  ],
   "keywords": [
     "opencode",
     "opencode-plugin",
@@ -20,7 +24,7 @@
   "license": "MIT",
   "magpie": {
     "maxConcurrency": 4,
-    "icon": "https://www.officeace.cn/favicon.ico",
+    "icon": "data:image/svg+xml,%3Csvg viewBox='0 0 48 48' xmlns='http://www.w3.org/2000/svg' width='48.000000' height='48.000000' fill='none' clip-path='url(%23c)'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='4.59999657' x2='42.5999832' y1='-1.90734863e-06' y2='48' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='rgb(255,115,45)' offset='0' stop-opacity='1'/%3E%3Cstop stop-color='rgb(232,53,17)' offset='0.477557212' stop-opacity='1'/%3E%3Cstop stop-color='rgb(246,66,30)' offset='1' stop-opacity='1'/%3E%3C/linearGradient%3E%3CclipPath id='c'%3E%3Crect width='48.000000' height='48.000000' x='0.000000' y='0.000000' rx='10.666667' fill='rgb(255,255,255)'/%3E%3C/clipPath%3E%3C/defs%3E%3Crect id='NewLogo' width='48.000000' height='48.000000' x='0.000000' y='0.000000' rx='10.666667' fill='url(%23g)'/%3E%3Cpath id='差集' d='M18.3581 13.779C14.0063 11.7508 8.22843 14.921 5.46166 20.8465C2.68921 26.7891 3.97885 33.2487 8.33069 35.2769C12.6825 37.3051 18.4604 34.1349 21.2271 28.2094C23.9996 22.2725 22.7043 15.8129 18.3581 13.779ZM14.5664 28.8004C16.1344 29.5276 18.2251 28.3857 19.225 26.2381C20.2249 24.0849 19.7534 21.7443 18.1853 21.0171C16.6173 20.2899 14.5266 21.4261 13.5267 23.5793C12.5268 25.7325 12.9984 28.0732 14.5664 28.8004Z' fill='rgb(255,255,255)' fill-rule='evenodd'/%3E%3Cpath id='差集' d='M25.7599 20.8528C28.5299 14.9228 34.3099 11.7528 38.6599 13.7828C42.7416 15.6876 44.1291 21.4929 41.9963 27.109C41.9681 27.2092 41.9338 27.3236 41.896 27.4496C41.6055 28.4171 41.1092 30.0703 41.6258 31.2466C42.05 32.2125 43.3227 33.1784 44.5954 33.1784L44.5954 33.7125L44.5982 33.714L44.5982 35.3957L44.5954 35.3958L44.5954 35.4C44.5465 35.4 44.4974 35.3995 44.4481 35.3985C40.3666 35.4583 38.4535 34.0222 37.7441 33.2874C34.9204 35.7168 31.4703 36.6083 28.6299 35.2828C24.2799 33.2528 22.9899 26.7928 25.7599 20.8528ZM34.9597 28.8005C36.5277 29.5277 38.6184 28.3858 39.6183 26.2383C40.6182 24.0851 40.1466 21.7444 38.5786 21.0172C37.0106 20.29 34.9199 21.4262 33.92 23.5794C32.9201 25.7326 33.3917 28.0733 34.9597 28.8005Z' fill='rgb(255,255,255)' fill-rule='evenodd'/%3E%3C/svg%3E",
     "options": {
       "signin": true,
       "signinHour": null,

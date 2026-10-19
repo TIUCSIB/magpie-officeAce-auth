@@ -234,7 +234,7 @@ console.log("\n== 积分 / 签到 (需要 OfficeAce 在运行) ==");
 
   let usage = null;
   try {
-    usage = await hooks.usage(getAuth);
+    usage = await hooks.auth.usage(getAuth);
   } catch (err) {
     usage = { error: err?.message ?? String(err), windows: [] };
   }
@@ -255,7 +255,7 @@ console.log("\n== 积分 / 签到 (需要 OfficeAce 在运行) ==");
   const outcomes = [];
   for (let i = 0; i < 2; i++) {
     try {
-      outcomes.push(await hooks.checkin(getAuth));
+      outcomes.push(await hooks.auth.checkin(getAuth));
     } catch (err) {
       outcomes.push({ error: err?.message ?? String(err) });
     }

@@ -542,103 +542,103 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
           },
         };
       },
-    },
+      /**
+       * 积分余额 -> magpie 的 Usage 卡片。
+       * 契约: { balance?, windows: [{name, used(0-100), display, aside}], error? }
+       */
+      async usage(getAuth) {
+        const auth = await getAuth().catch(() => null);
+        if (!auth) return { error: "未登录", windows: [] };
+        let cookie;
+        try {
+          cookie = resolveCookie(auth);
+        } catch (err) {
+          return { error: err?.message ?? String(err), windows: [] };
+        }
 
-    /**
-     * 积分余额 -> magpie 的 Usage 卡片。
-     * 契约: { balance?, windows: [{name, used(0-100), display, aside}], error? }
-     */
-    async usage(getAuth) {
-      const auth = await getAuth().catch(() => null);
-      if (!auth) return { error: "未登录", windows: [] };
-      let cookie;
-      try {
-        cookie = resolveCookie(auth);
-      } catch (err) {
-        return { error: err?.message ?? String(err), windows: [] };
-      }
+        // 先看签到状态(只读), 不在这里补签 —— 补签交给 magpie 的 Daily check-in
+        let sub;
+        try {
+          sub = await readSubscription(makeClient(cookie));
+        } catch (err) {
+          return { error: `${OFFLINE_HINT}: ${err?.message ?? err}`, windows: [] };
+        }
+        if (!sub.ok) return { error: sub.error, windows: [] };
 
-      // 先看签到状态(只读), 不在这里补签 —— 补签交给 magpie 的 Daily check-in
-      let sub;
-      try {
-        sub = await readSubscription(makeClient(cookie));
-      } catch (err) {
-        return { error: `${OFFLINE_HINT}: ${err?.message ?? err}`, windows: [] };
-      }
-      if (!sub.ok) return { error: sub.error, windows: [] };
+        const money = (n) => (Number.isFinite(n) ? Math.round(n) : 0);
+        // 窗口条吃的是「已用」百分比, magpie 画出来是剩余
+        const usedPct = sub.unlimited ? 0 : Math.max(0, Math.min(100, 100 - sub.percent));
 
-      const money = (n) => (Number.isFinite(n) ? Math.round(n) : 0);
-      // 窗口条吃的是「已用」百分比, magpie 画出来是剩余
-      const usedPct = sub.unlimited ? 0 : Math.max(0, Math.min(100, 100 - sub.percent));
+        const windows = [
+          {
+            name: "积分余额",
+            used: usedPct,
+            display: sub.unlimited ? "不限量" : `${money(sub.remaining)} / ${money(sub.total)} 积分`,
+            aside: true,
+          },
+        ];
 
-      const windows = [
-        {
-          name: "积分余额",
-          used: usedPct,
-          display: sub.unlimited ? "不限量" : `${money(sub.remaining)} / ${money(sub.total)} 积分`,
-          aside: true,
-        },
-      ];
+        if (sub.daily) {
+          windows.push({
+            name: "每日签到",
+            used: 0,
+            display: sub.daily.claimedToday
+              ? `今日已签 ✓ +${sub.daily.points}`
+              : `今日未签（+${sub.daily.points}）`,
+            aside: true,
+          });
+        }
 
-      if (sub.daily) {
-        windows.push({
-          name: "每日签到",
-          used: 0,
-          display: sub.daily.claimedToday
-            ? `今日已签 ✓ +${sub.daily.points}`
-            : `今日未签（+${sub.daily.points}）`,
-          aside: true,
-        });
-      }
+        for (const b of sub.bonuses) {
+          if (!b.name || /checkin|daily/i.test(b.id)) continue;
+          windows.push({ name: b.name, used: 0, display: `+${b.points} 积分`, aside: true });
+        }
 
-      for (const b of sub.bonuses) {
-        if (!b.name || /checkin|daily/i.test(b.id)) continue;
-        windows.push({ name: b.name, used: 0, display: `+${b.points} 积分`, aside: true });
-      }
+        if (sub.plan) {
+          const until = sub.expiresAt ? ` · 至 ${String(sub.expiresAt).slice(0, 10)}` : "";
+          windows.push({ name: "套餐", used: 0, display: `${sub.plan}${until}`, aside: true });
+        }
 
-      if (sub.plan) {
-        const until = sub.expiresAt ? ` · 至 ${String(sub.expiresAt).slice(0, 10)}` : "";
-        windows.push({ name: "套餐", used: 0, display: `${sub.plan}${until}`, aside: true });
-      }
+        if (sub.account?.loggedOut) {
+          windows.push({ name: "登录态", used: 0, display: "未登录，请打开 OfficeAce 登录", aside: true });
+        } else if (sub.account?.needsReauth) {
+          windows.push({ name: "登录态", used: 0, display: "已失效，请重新登录 OfficeAce", aside: true });
+        }
 
-      if (sub.account?.loggedOut) {
-        windows.push({ name: "登录态", used: 0, display: "未登录，请打开 OfficeAce 登录", aside: true });
-      } else if (sub.account?.needsReauth) {
-        windows.push({ name: "登录态", used: 0, display: "已失效，请重新登录 OfficeAce", aside: true });
-      }
+        return {
+          balance: sub.unlimited ? "不限量" : `${money(sub.remaining)} 积分`,
+          windows,
+        };
+      },
 
-      return {
-        balance: sub.unlimited ? "不限量" : `${money(sub.remaining)} 积分`,
-        windows,
-      };
-    },
+      /**
+       * 每日签到 -> POST /api/subscription/claim-bonus
+       * 契约: { outcome, credit?, streak?, message? }; throw 则 magpie 30 分钟后重试。
+       * 由 magpie 「Settings → Usage → Plugins → Daily check-in」开关调度。
+       */
+      async checkin(getAuth) {
+        const auth = await getAuth().catch(() => null);
+        if (!auth) throw new Error("未登录");
+        const cookie = resolveCookie(auth);
 
-    /**
-     * 每日签到 -> POST /api/subscription/claim-bonus
-     * 契约: { outcome, credit?, streak?, message? }; throw 则 magpie 30 分钟后重试。
-     * 由 magpie 「Settings → Usage → Plugins → Daily check-in」开关调度。
-     */
-    async checkin(getAuth) {
-      const auth = await getAuth().catch(() => null);
-      if (!auth) throw new Error("未登录");
-      const cookie = resolveCookie(auth);
+        let r;
+        try {
+          r = await claimBonus(makeClient(cookie));
+        } catch (err) {
+          // 连不上本地 API: 抛出去让 magpie 稍后重试, 别当成「已签到」
+          throw new Error(`${OFFLINE_HINT}: ${err?.message ?? err}`);
+        }
+        if (!r.ok) throw new Error(r.error);
 
-      let r;
-      try {
-        r = await claimBonus(makeClient(cookie));
-      } catch (err) {
-        // 连不上本地 API: 抛出去让 magpie 稍后重试, 别当成「已签到」
-        throw new Error(`${OFFLINE_HINT}: ${err?.message ?? err}`);
-      }
-      if (!r.ok) throw new Error(r.error);
+        // 服务端幂等: 今天领过了就回空数组, 那不是失败
+        if (!r.points) return { outcome: "done", message: "今日已签到" };
+        return {
+          outcome: "done",
+          credit: r.points,
+          message: `签到 +${r.points} 积分`,
+        };
+      },
 
-      // 服务端幂等: 今天领过了就回空数组, 那不是失败
-      if (!r.points) return { outcome: "done", message: "今日已签到" };
-      return {
-        outcome: "done",
-        credit: r.points,
-        message: `签到 +${r.points} 积分`,
-      };
     },
 
     provider: {
