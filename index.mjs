@@ -31,6 +31,7 @@ import {
   DEFAULT_AGENT,
 } from "./lib/agent.mjs";
 import { readSubscription, claimBonus, OFFLINE_HINT } from "./lib/subscription.mjs";
+import { oauthAuthorize, encodeCookie, decodeCookie } from "./lib/oauth.mjs";
 
 const PROVIDER = "officeace";
 const CLIENT_BASE = `https://officeace.local/v1`; // 占位; 真实请求由 loader 的 fetch 接管
@@ -381,6 +382,16 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
       provider: PROVIDER,
       methods: [
         {
+          type: "oauth",
+          label: "OfficeAce OAuth 风格登录(本机会话 / 浏览器回调)",
+          placeholder: "留空或用 auto 自动读本机; 也可直接粘 oc_sid",
+          async authorize(inputs) {
+            // 本机会话在 -> 秒成功(不弹浏览器); 不在 -> 回环页引导登录;
+            // 手动粘 oc_sid 也接受。oauth 方法会把 accountId 自动落库。
+            return oauthAuthorize(inputs);
+          },
+        },
+        {
           type: "api",
           label: "OfficeAce 本机登录态",
           placeholder: "填 auto 自动读取本机登录态；或粘贴 oc_sid",
@@ -701,4 +712,7 @@ export const _internal = {
   completionResponse,
   sseChunk,
   assembleFromSse,
+  oauthAuthorize,
+  encodeCookie,
+  decodeCookie,
 };
