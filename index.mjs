@@ -31,7 +31,8 @@ import {
   DEFAULT_AGENT,
 } from "./lib/agent.mjs";
 import { readSubscription, claimBonus, OFFLINE_HINT } from "./lib/subscription.mjs";
-import { oauthAuthorize } from "./lib/oauth.mjs";
+import { oauthAuthorize, oauthRefresh } from "./lib/oauth.mjs";
+import { iamCredentialOf, readSubscriptionDirect, claimBonusDirect } from "./lib/cloud.mjs";
 
 const PROVIDER = "officeace";
 const CLIENT_BASE = `https://officeace.local/v1`; // 占位; 真实请求由 loader 的 fetch 接管
@@ -381,11 +382,11 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
     auth: {
       provider: PROVIDER,
       methods: [
-        // 唯一登录方式: 真 OAuth(华为云统一认证授权码流 + PKCE)。
-        // authorize 返回浏览器结果 {url, method:"auto", instructions, callback}:
-        //   url = auth.huaweicloud.com 登录页(magpie 用系统浏览器打开)
-        //   callback = 轮询 /api/login/oauth/poll?state= 直到授权码就位,
-        //              POST /api/login/callback {code,state} 完成本机会话
+        // 唯一登录方式: 真 OAuth(华为云统一认证授权码流 + PKCE + DPoP)。
+        // 全部请求直连华为云(auth.huaweicloud.com / agentarts / sts),
+        // **完全不需要 OfficeAce 运行**。成功后插件自持完整 IAM 凭据
+        // {AK, SK, STS, projectId}(存在账号 metadata), 用于:
+        //   模型网关(Authorization: Basic base64(ak:sk)) + 签到/订阅(V11 签名直连)
         {
           type: "oauth",
           label: "OfficeAce 登录(华为云 OAuth)",
@@ -395,19 +396,35 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
         },
       ],
 
+      // magpie 的续期钩子: refresh_token + DPoP 换新凭据(全自动)
+      async refresh(auth, provider) {
+        log.info(`OAuth 凭据续期: ${provider} / ${auth?.accountId ?? "?"}`);
+        return oauthRefresh(auth);
+      },
+
       async loader(getAuth) {
         const auth = await getAuth();
+        // 自持 IAM 凭据(OAuth 登录产出)优先 —— 不依赖 OfficeAce 任何文件/进程
+        const iam = iamCredentialOf(auth);
+        const gw = iam
+          ? {
+              base: process.env.MAGPIE_OFFICEACE_GATEWAY_BASE
+                || "https://modelgw-0009.officeace.cn-southwest-2.huaweicloud-agentarts.com/v2",
+              authorization: `Basic ${Buffer.from(`${iam.ak}:${iam.sk}`).toString("base64")}`,
+              source: "oauth-iam",
+            }
+          : discoverGateway();
+        // 本机会话(仅 agent 兜底链路需要; 无 OAuth 凭据时签到/订阅的降级通道)
         let cookie = "";
         try {
           cookie = resolveCookie(auth);
         } catch (err) {
           log.warn(`读取 OfficeAce 登录态失败(仅智能体链路需要): ${err?.message ?? err}`);
         }
-        const gw = discoverGateway();
         // 注意别叫 client: 外层那个是 magpie 的运行期 client, 有 .auth.set
         const oa = makeClient(cookie);
 
-        log.info(`网关直连: ${gw.base} (凭据来源 ${gw.source})`);
+        log.info(`网关直连: ${gw.base} (凭据来源 ${gw.source}${iam ? " [自持 IAM]" : ""})`);
 
         // magpie 不会把 authorize() 返回的 accountId 落库(api 类方法),
         // 得插件自己写一次; 只试一次, 免得每个请求都写盘。
@@ -492,6 +509,43 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
       async usage(getAuth) {
         const auth = await getAuth().catch(() => null);
         if (!auth) return { error: "未登录", windows: [] };
+        const iam = iamCredentialOf(auth);
+
+        // 主路: 自持 IAM 凭据直连华为云(不需要 OfficeAce)
+        if (iam) {
+          const r = await readSubscriptionDirect(iam);
+          if (!r.ok) return { error: `直连订阅失败: ${r.error}`, windows: [] };
+          const d = r.data;
+          const total = Number(d?.totalCredits);
+          const used = Number(d?.usedCredits);
+          const unlimited = d?.unlimitedCredits === true || total < 0;
+          const remaining = unlimited ? Infinity : Math.max(0, total - used);
+          const usedPct = unlimited ? 0 : Math.max(0, Math.min(100, 100 - Math.round((remaining / total) * 100)));
+          const money = (n) => (Number.isFinite(n) ? Math.round(n) : 0);
+          const windows = [
+            {
+              name: "积分余额",
+              used: usedPct,
+              display: unlimited ? "不限量" : `${money(remaining)} / ${money(total)} 积分`,
+              aside: true,
+            },
+          ];
+          for (const b of Array.isArray(d?.bonus_skus) ? d.bonus_skus : []) {
+            const id = String(b?.activity_id ?? "");
+            if (!id || /checkin|daily/i.test(id)) continue;
+            windows.push({ name: String(b?.activity_name ?? id), used: 0, display: `+${money(b?.points)} 积分`, aside: true });
+          }
+          if (d?.plan || d?.tier) {
+            const until = d?.exp_time ? ` · 至 ${String(d.exp_time).slice(0, 10)}` : "";
+            windows.push({ name: "套餐", used: 0, display: `${d.plan ?? d.tier}${until}`, aside: true });
+          }
+          return {
+            balance: unlimited ? "不限量" : `${money(remaining)} 积分`,
+            windows,
+          };
+        }
+
+        // 降级: 无自持凭据 -> 走 OfficeAce 本地 API(旧通道)
         let cookie;
         try {
           cookie = resolveCookie(auth);
@@ -562,6 +616,17 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
       async checkin(getAuth) {
         const auth = await getAuth().catch(() => null);
         if (!auth) throw new Error("未登录");
+        const iam = iamCredentialOf(auth);
+
+        // 主路: 自持凭据直连华为云(不需要 OfficeAce)
+        if (iam) {
+          const r = await claimBonusDirect(iam);
+          if (!r.ok) throw new Error(`直连签到失败: ${r.error}`);
+          if (!r.points) return { outcome: "done", message: "今日已签到" };
+          return { outcome: "done", credit: r.points, message: `签到 +${r.points} 积分` };
+        }
+
+        // 降级: OfficeAce 本地 API(旧通道)
         const cookie = resolveCookie(auth);
 
         let r;
