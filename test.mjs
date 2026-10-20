@@ -54,33 +54,24 @@ console.log("\n== 插件 hooks ==");
 const hooks = await OfficeAcePlugin({
   client: { app: { log: (x) => console.log("   [log]", x.body.message) } },
 });
-console.log("\n== OAuth 方法 (华为云授权码流 v4) ==");
+console.log("\n== 登录方法 (api 承载真 OAuth, 阻塞式) ==");
 {
-  const oauth = hooks.auth.methods.find((m) => m.type === "oauth");
-  check("申报了 oauth 方法", Boolean(oauth));
-  check("只保留 oauth 方法", hooks.auth.methods.length === 1);
-  const r = await oauth.authorize({});
-  if (r.type === "failed") {
-    check("authorize 失败时给原因(OfficeAce 需在运行)", String(r.error ?? "").length > 0, r.error ?? "");
-  } else {
-    check("authorize 返回浏览器结果", typeof r.url === "string" && r.url.length > 0, JSON.stringify(r).slice(0, 140));
-    check("url 是华为云登录页", r.url.includes("auth.huaweicloud.com"), r.url?.slice(0, 100));
-    check("带 method:auto 与 callback", r.method === "auto" && typeof r.callback === "function");
-    // 不真授权: 用短超时验证 callback 轮询能干净退出(返回 failed 而非挂死)
-    const prev = process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS;
-    process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS = "1200";
-    process.env.MAGPIE_OFFICEACE_OAUTH_POLL_MS = "500";
-    const fin = await r.callback();
-    if (prev === undefined) delete process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS;
-    else process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS = prev;
-    check("callback 超时干净返回 failed", fin.type === "failed", JSON.stringify(fin).slice(0, 160));
-  }
+  const apiM = hooks.auth.methods.find((m) => m.type === "api");
+  check("申报了 api 方法(承载真 OAuth)", Boolean(apiM));
+  check("只保留一种方法", hooks.auth.methods.length === 1);
+  // 不真登录: 短超时 + 不开浏览器, 验证阻塞流能干净返回 failed
+  process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS = "1500";
+  process.env.MAGPIE_OFFICEACE_OAUTH_POLL_MS = "500";
+  process.env.MAGPIE_OFFICEACE_OAUTH_NO_OPEN = "1";
+  const r = await apiM.authorize({});
+  delete process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS;
+  delete process.env.MAGPIE_OFFICEACE_OAUTH_POLL_MS;
+  delete process.env.MAGPIE_OFFICEACE_OAUTH_NO_OPEN;
+  check("阻塞 OAuth 超时干净返回 failed", r.type === "failed", JSON.stringify(r).slice(0, 160));
+  check("失败给原因", typeof r.error === "string" && r.error.length > 0);
 }
 
-const authz = await hooks.auth.methods[0].authorize({});
-let authzOk = typeof authz?.url === "string" && authz?.url.length > 0 && typeof authz?.callback === "function";
-if (authz.type === "failed") authzOk = true; // App 没开时 authorize 会 failed, 单测不弹窗
-check("oauth authorize 返回浏览器结果或明确失败", authzOk, JSON.stringify(authz).slice(0, 140));
+// loader 只需要 key; authorize 的阻塞流已在上面"登录方法"块验证过(短超时)
 const loaded = await hooks.auth.loader(async () => ({ type: "api", key: "auto" }));
 
 const call = (body) =>
@@ -192,7 +183,7 @@ console.log("\n== 直连: 工具调用 ==");
 
 console.log("\n== provider.models (默认: 与 OfficeAce 界面一致) ==");
 {
-  const ms = await hooks.provider.models({ models: {} }, { auth: { type: "api", key: authz.key } });
+  const ms = await hooks.provider.models({ models: {} }, { auth: { type: "api", key: "auto" } });
   const ids = Object.keys(ms);
   console.log(`  暴露 ${ids.length} 个: ${ids.join(", ")}`);
   check("默认不暴露网关测试模型", !ids.some((i) => /-test-|-test$|-bnt|-zx|-a3|harmony/.test(i)));
@@ -203,7 +194,7 @@ console.log("\n== provider.models (默认: 与 OfficeAce 界面一致) ==");
   check("档位带 reasoningEffort", ms["glm-5.2"]?.variants?.high?.reasoningEffort === "high");
 
   process.env.MAGPIE_OFFICEACE_MODELS = "all";
-  const all = await hooks.provider.models({ models: {} }, { auth: { type: "api", key: authz.key } });
+  const all = await hooks.provider.models({ models: {} }, { auth: { type: "api", key: "auto" } });
   delete process.env.MAGPIE_OFFICEACE_MODELS;
   const allIds = Object.keys(all);
   console.log(`  MAGPIE_OFFICEACE_MODELS=all -> ${allIds.length} 个`);
@@ -255,9 +246,9 @@ if (withAgent) {
   check("智能体链路可用", res.status === 200 && typeof j.choices?.[0]?.message?.content === "string");
 }
 
-console.log("\n== 积分 / 签到 (需要 OfficeAce 在运行) ==");
+console.log("\n== 积分 / 签到 (自持凭据直连或本地 API 降级) ==");
 {
-  const getAuth = async () => ({ type: "api", key: authz.key });
+  const getAuth = async () => ({ type: "api", key: "auto" });
 
   let usage = null;
   try {

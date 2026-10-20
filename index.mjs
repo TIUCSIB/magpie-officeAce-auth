@@ -31,7 +31,7 @@ import {
   DEFAULT_AGENT,
 } from "./lib/agent.mjs";
 import { readSubscription, claimBonus, OFFLINE_HINT } from "./lib/subscription.mjs";
-import { oauthAuthorize, oauthRefresh } from "./lib/oauth.mjs";
+import { runCloudLogin, oauthRefreshCredentials } from "./lib/oauth.mjs";
 import { iamCredentialOf, readSubscriptionDirect, claimBonusDirect } from "./lib/cloud.mjs";
 
 const PROVIDER = "officeace";
@@ -361,6 +361,25 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
     return key && key !== "auto" ? key : discoverSession().cookie;
   };
 
+  // OAuth 凭据自动续期: 临期(<10 分钟)时 refresh_token+DPoP 换新, 并落库
+  const freshAuth = async (auth) => {
+    if (!auth) return auth;
+    const exp = Number(auth?.metadata?.oauthExpiresAt ?? 0);
+    if (!exp || exp - Date.now() >= 10 * 60 * 1000 || !auth.metadata?.oauthRefreshToken) return auth;
+    try {
+      const m = await oauthRefreshCredentials(auth.metadata);
+      const next = { ...auth, metadata: { ...auth.metadata, ...m } };
+      if (client?.auth?.set) {
+        await client.auth.set({ path: { id: PROVIDER }, body: { ...next } }).catch(() => {});
+      }
+      log.info("OAuth 凭据已自动续期");
+      return next;
+    } catch (err) {
+      log.warn(`OAuth 凭据续期失败(继续用旧凭据): ${err?.message ?? err}`);
+      return auth;
+    }
+  };
+
   const agentModels = () => ({
     agent: { ...AGENT_MODEL, id: "agent", name: "OfficeAce 智能体" },
   });
@@ -382,28 +401,23 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
     auth: {
       provider: PROVIDER,
       methods: [
-        // 唯一登录方式: 真 OAuth(华为云统一认证授权码流 + PKCE + DPoP)。
-        // 全部请求直连华为云(auth.huaweicloud.com / agentarts / sts),
-        // **完全不需要 OfficeAce 运行**。成功后插件自持完整 IAM 凭据
-        // {AK, SK, STS, projectId}(存在账号 metadata), 用于:
-        //   模型网关(Authorization: Basic base64(ak:sk)) + 签到/订阅(V11 签名直连)
+        // 唯一登录方式: 真 OAuth(华为云授权码流 + PKCE + DPoP), 阻塞式完成。
+        // 全部请求直连华为云, **完全不需要 OfficeAce 运行**。
+        // 为什么用 api 方法承载: magpie 的 oauth 后端会把 authorize 结果
+        // 序列化存储(函数丢失, 报 s.a.callback is not a function), 而 api
+        // 方法的 authorize 返回 success 会直接落库 —— 阻塞到登录完成再返回,
+        // 凭据全部走 metadata(纯数据, 序列化安全)。
         {
-          type: "oauth",
+          type: "api",
           label: "OfficeAce 登录(华为云 OAuth)",
           async authorize(inputs) {
-            return oauthAuthorize(inputs, { log });
+            return runCloudLogin(inputs, { log });
           },
         },
       ],
 
-      // magpie 的续期钩子: refresh_token + DPoP 换新凭据(全自动)
-      async refresh(auth, provider) {
-        log.info(`OAuth 凭据续期: ${provider} / ${auth?.accountId ?? "?"}`);
-        return oauthRefresh(auth);
-      },
-
       async loader(getAuth) {
-        const auth = await getAuth();
+        const auth = await freshAuth(await getAuth());
         // 自持 IAM 凭据(OAuth 登录产出)优先 —— 不依赖 OfficeAce 任何文件/进程
         const iam = iamCredentialOf(auth);
         const gw = iam
@@ -507,7 +521,7 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
        * 契约: { balance?, windows: [{name, used(0-100), display, aside}], error? }
        */
       async usage(getAuth) {
-        const auth = await getAuth().catch(() => null);
+        const auth = await freshAuth(await getAuth().catch(() => null));
         if (!auth) return { error: "未登录", windows: [] };
         const iam = iamCredentialOf(auth);
 
@@ -614,7 +628,7 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
        * 由 magpie 「Settings → Usage → Plugins → Daily check-in」开关调度。
        */
       async checkin(getAuth) {
-        const auth = await getAuth().catch(() => null);
+        const auth = await freshAuth(await getAuth().catch(() => null));
         if (!auth) throw new Error("未登录");
         const iam = iamCredentialOf(auth);
 
@@ -709,5 +723,6 @@ export const _internal = {
   completionResponse,
   sseChunk,
   assembleFromSse,
-  oauthAuthorize,
+  runCloudLogin,
+  oauthRefreshCredentials,
 };
