@@ -381,18 +381,19 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
     auth: {
       provider: PROVIDER,
       methods: [
+        // oauth: 按官方契约(methods 文档)实现 —— authorize 永远返回浏览器
+        // 结果 {url, instructions, method:"auto", callback}, 成功只在 callback()
+        // 里返回。回环页由 magpie 用系统浏览器打开; callback 先看本机会话
+        // (等效 OAuth 静默刷新, 秒成功), 不在则等页面信号。
         {
           type: "oauth",
-          label: "OfficeAce OAuth 风格登录(本机会话 / 自动开登录页)",
-          placeholder: "留空或用 auto 自动读本机; 也可直接粘 oc_sid",
+          label: "OfficeAce 登录(浏览器/本机会话)",
+          placeholder: "自动读取本机登录态",
           async authorize(inputs) {
-            // 本机会话在 -> 秒成功(不弹浏览器); 不在 -> 插件自己开 127.0.0.1
-            // 登录页并阻塞等待完成(页面自动探测会话/可粘 oc_sid)。
-            // 注意: 不返回浏览器结果 —— 本版 magpie 对外部插件返回的 browser
-            // 结果的 callback 会丢失(登录时直接报 s.a.callback is not a function)。
             return oauthAuthorize(inputs, { log });
           },
         },
+        // api: 备用, 直接粘 oc_sid / auto
         {
           type: "api",
           label: "OfficeAce 本机登录态",

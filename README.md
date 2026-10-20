@@ -114,30 +114,21 @@ OfficeAce 界面上的 **快速 / 均衡 / 极致** 就对应这套档位（快�
 
 ## 它是怎么登录的
 
-magpie 的插件登录方式只有两种：`oauth` 和 `api`（本机 29 个用 oauth、6 个用 api）。
-本插件**两种都申报了**，默认用 **`oauth`**（列表第一位）：
+magpie 的插件登录方式有 `oauth` 和 `api` 两种。本插件**两个都申报**，
+默认 `oauth`（列表第一位，行为和 WorkBuddy 等社区插件一致）：
 
 | 方法 | 流程 | 适用 |
 | --- | --- | --- |
-| **oauth**（默认） | 本机会话在 → 秒成功不弹浏览器；会话不在 → 插件自己开 `127.0.0.1` 登录页（链接同时写日志和临时文件），页面自动检测到本机会话即完成，也可在页面粘 `oc_sid`；整条流程在 `authorize()` 内阻塞完成，**不返回浏览器结果** | 日常。magpie 会**自动持久化** `accountId`，账号名一劳永逸，不再显示「API key …末四位」 |
-| **api**（备用） | 老流程：`auto` 自动读本机或粘贴 `oc_sid`；`accountId` 不会自动落库（插件 loader 里补写了） | 兼容旧行为 |
+| **oauth**（默认） | 按官方契约：`authorize()` 返回 `{url, instructions, method:"auto", callback}`；magpie 用系统浏览器打开 `url`（本插件的 127.0.0.1 回环页）；`callback()` 先看本机会话（等效 OAuth 静默刷新）→ 有就秒成功，没有则等页面信号（登录 OfficeAce 自动完成 / 页面粘 `oc_sid`） | 日常。`accountId` 随成功结果落库，账号名一劳永逸 |
+| **api**（备用） | `auto` 自动读本机或粘贴 `oc_sid`；`accountId` 由插件 loader 补写落库 | 兼容/无浏览器场景 |
 
-> **为什么 oauth 方法不返回浏览器结果？** 实测本版 magpie 桌面端对外部插件
-> `authorize()` 返回的 `{type:"browser", url, callback}` 有 bug：callback 在落库时
-> 丢失，完成阶段直接报 `s.a.callback is not a function`（内置插件和宿主同进程
-> 所以没事）。所以本插件的整个交互都放在 `authorize()` 内部完成，返回只可能是
-> success/failed，避开这条坏路径。对应现象：「已打开登录页」出现但浏览器没动静，
-> 然后弹「登录未完成」。
->
-> **排查辅助**：登录流程每一步都追加写进 `%TEMP%\magpie-officeace-oauth.log`
-> （本机会话读取结果、回环页地址、开浏览器尝试、超时/完成原因）。
-> magpie GUI 里看不到插件日志时，直接把这个文件发出来即可定位。
-> 另外：**改了插件代码后 magpie 不会热更**——更新后必须彻底退出 magpie
-> （托盘图标退出，不是关窗口）重新打开，或在该插件上 off + on。
+> **契约要点（踩过的坑）**：magpie 的 oauth 后端**不认 `authorize` 直接返回
+> `success`**——它把任何返回值都挂到 session 上，完成只能靠结果对象上的
+> `callback()`。所以成功永远只在 `callback()` 里返回。
+> 早期版本让 `authorize` 走 fast path 返回 success，现象就是「已打开登录页」
+> 出现但流程挂起/报 `s.a.callback is not a function`。
 
-「oauth 风格」而不是真 OAuth 的原因：OfficeAce 的真登录（华为 OAuth2）在桌面端
-完成，凭据由它自己维护轮换。插件借用 magpie 的 oauth 管道做「回调式收据」，
-体验和 OAuth 一致，但没有浏览器驱动、token 刷新那些脆弱环节。
+而其中其实有**两套凭据，各干各的活**：
 
 而其中其实有**两套凭据，各干各的活**：
 
@@ -152,10 +143,9 @@ magpie 的插件登录方式只有两种：`oauth` 和 `api`（本机 29 个用 
 `userName`（顺便看 `needsReauth`），把账号名记进 magpie。
 
 > 小坑：magpie **不会**把 `api` 类方法 `authorize()` 返回的 `accountId` 落库
-> （`oauth` 类的会），得插件自己在 `loader` 里调一次 `client.auth.set`。
-> 不做的话账号那一栏永远显示 `API key …末四位`。
-> **选上面那个 `oauth` 方法就没有这个坑**——magpie 直接落库，loader 里那套
-> 补写逻辑只是给 `api` 方法兜底。
+> （`oauth` 类的会），所以插件在 `loader` 里调一次 `client.auth.set` 补写，
+> 账号那一栏显示账号名而不是 `API key …末四位`。本插件只有 `api` 方法，
+> 这套补写就是它的落库路径。
 
 ### 为什么不用 oauth
 
@@ -332,8 +322,8 @@ magpie plugin login officeace        # 默认 oauth 方法, 本机会话在就�
 magpie provider test officeace
 ```
 
-登录框里如果有方法选择，默认选 **oauth**（自动持久化账号名）；想用旧行为就选
-`api` 方法。两个方法都支持 `auto` / 手动粘 `oc_sid`。
+登录框里只有一种方法（`api` 本机登录态）：留空或用 `auto` 都会自动读本机会话，
+秒完成；没本机会话时直接粘贴 `oc_sid` 即可。
 
 然后在 magpie 里把某个 agent 的模型设成 `officeace/glm-5.2` 之类。
 

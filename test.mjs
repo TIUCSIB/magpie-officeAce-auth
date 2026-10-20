@@ -44,15 +44,6 @@ check(
 );
 check("capsOf 未知模型兜底", _internal.capsOf("nope-1").tool_call === true);
 
-console.log("\n== oauth 方法 (编码/解码) ==");
-{
-  const { encodeCookie, decodeCookie } = _internal;
-  const sid = "sid_abc=123;foo";
-  check("oc_sid base64url 编解码", decodeCookie(encodeCookie(sid)).cookie === sid);
-  check("auto 识别", decodeCookie("auto").kind === "auto");
-  check("明文兜底", decodeCookie(sid).cookie === sid);
-}
-
 console.log("\n== 凭据发现 ==");
 const gw = discoverGateway();
 console.log(`  base = ${gw.base}`);
@@ -63,25 +54,46 @@ console.log("\n== 插件 hooks ==");
 const hooks = await OfficeAcePlugin({
   client: { app: { log: (x) => console.log("   [log]", x.body.message) } },
 });
-const authz = await hooks.auth.methods[0].authorize({});
-check("authorize 成功", authz.type === "success", authz.error ?? "");
-
-console.log("\n== oauth 方法 (authorize 行为) ==");
+console.log("\n== 登录方法 (oauth v3 契约) ==");
 {
   const oauth = hooks.auth.methods.find((m) => m.type === "oauth");
   check("申报了 oauth 方法", Boolean(oauth));
-  check("oauth 方法在第一位", hooks.auth.methods[0].type === "oauth");
-  const r = await oauth.authorize({ token: "auto" });
-  check("oauth authorize(auto) 走本机会话", ["success", "failed"].includes(r.type), r.error ?? "");
-  check("oauth 不返回浏览器结果(绕开 magpie 的 callback 丢函数 bug)", r.type !== "browser");
-  if (r.type === "success") {
-    check("oauth 成功带 key", r.key === "auto");
-    check("oauth 成功带账号名(本机已登录)", r.metadata?.session === "ok" ? typeof r.accountId === "string" && r.accountId.length > 0 : true,
-      r.accountId ? "" : `(本地 API: ${r.metadata?.session}, App 未开时账号名为空属正常)`);
-    check("oauth metadata 带来源", r.metadata?.via === "local-session", JSON.stringify(r.metadata));
+  // 按官方契约: authorize 返回浏览器结果, 不返回 success/failed
+  const r = await oauth.authorize({});
+  check("authorize 返回浏览器结果", typeof r.url === "string" && r.url.length > 0, JSON.stringify(r).slice(0, 160));
+  check("带 method:auto", r.method === "auto");
+  check("带 instructions 与 callback", typeof r.instructions === "string" && typeof r.callback === "function");
+  // 本机会话在 -> callback 直接秒成功(等效 OAuth 静默刷新)
+  const fin = await r.callback();
+  check("callback 收尾成功", fin.type === "success", fin.error ?? "");
+  if (fin.type === "success") {
+    check("callback 成功带 key", fin.key === "auto");
+    check("callback 账号名(本机已登录)", fin.metadata?.session === "ok" ? typeof fin.accountId === "string" && fin.accountId.length > 0 : true,
+      fin.accountId ? "" : `(session=${fin.metadata?.session})`);
   }
+  await new Promise((res) => setTimeout(res, 400)); // 等回环服务器关闭
 }
-const loaded = await hooks.auth.loader(async () => ({ type: "api", key: authz.key }));
+{
+  const apiM = hooks.auth.methods.find((m) => m.type === "api");
+  check("api 方法仍在(备用)", Boolean(apiM));
+  const r = await apiM.authorize({ key: "auto" });
+  check("api authorize(auto) 走本机会话", ["success", "failed"].includes(r.type), r.error ?? "");
+}
+
+console.log("\n== oc_sid 编解码 ==");
+{
+  const { encodeCookie, decodeCookie } = _internal;
+  const sid = "sid_abc=123;foo";
+  check("oc_sid 编解码往返", decodeCookie(encodeCookie(sid)).cookie === sid);
+  check("auto 识别", decodeCookie("auto").kind === "auto");
+  check("明文兜底", decodeCookie(sid).cookie === sid);
+}
+
+const authz = await hooks.auth.methods[0].authorize({});
+check("oauth authorize 返回浏览器结果", typeof authz?.url === "string" && authz?.url.length > 0 && typeof authz?.callback === "function", JSON.stringify(authz).slice(0, 160));
+const authDone = await authz.callback();
+check("oauth callback 完成", authDone.type === "success", authDone.error ?? "");
+const loaded = await hooks.auth.loader(async () => ({ type: "api", key: authDone.key }));
 
 const call = (body) =>
   loaded.fetch("https://officeace.local/v1/chat/completions", {
