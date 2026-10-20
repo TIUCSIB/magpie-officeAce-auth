@@ -563,26 +563,78 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
         const auth = await freshAuth(await getAuth().catch(() => null));
         if (!auth) return { error: "未登录", windows: [] };
         const iam = iamCredentialOf(auth);
+        const money = (n) => (Number.isFinite(n) ? Math.round(n) : 0);
 
-        // 主路: 自持 IAM 凭据直连华为云(不需要 OfficeAce)
+        // 主路: OfficeAce 本地 API —— 和官方界面同源口径:
+        // /api/subscription/current 已把平台额度 + 活动奖励聚合成
+        // totalCredits/usedCredits(官方 SubscriptionStateProvider 逻辑),
+        // 直连云端的原始 skus/bonus_skus 无法精确复刻这个聚合。
+        let cookie = "";
+        try {
+          cookie = resolveCookie(auth);
+        } catch {}
+        if (cookie) {
+          let sub = null;
+          try {
+            sub = await readSubscription(makeClient(cookie));
+          } catch {
+            // OfficeAce 未运行 -> 落到直连降级
+          }
+          if (sub?.ok) {
+            // 窗口条吃的是「已用」百分比, magpie 画出来是剩余
+            const usedPct = sub.unlimited ? 0 : Math.max(0, Math.min(100, 100 - sub.percent));
+            const windows = [
+              {
+                name: "积分余额",
+                used: usedPct,
+                display: sub.unlimited ? "不限量" : `${money(sub.remaining)} / ${money(sub.total)} 积分`,
+                aside: true,
+              },
+            ];
+            if (sub.daily) {
+              windows.push({
+                name: "每日签到",
+                used: 0,
+                display: sub.daily.claimedToday
+                  ? `今日已签 ✓ +${sub.daily.points}`
+                  : `今日未签（+${sub.daily.points}）`,
+                aside: true,
+              });
+            }
+            for (const b of sub.bonuses) {
+              if (!b.name || /checkin|daily/i.test(b.id)) continue;
+              windows.push({ name: b.name, used: 0, display: `+${b.points} 积分`, aside: true });
+            }
+            if (sub.plan) {
+              const until = sub.expiresAt ? ` · 至 ${String(sub.expiresAt).slice(0, 10)}` : "";
+              windows.push({ name: "套餐", used: 0, display: `${sub.plan}${until}`, aside: true });
+            }
+            if (sub.account?.loggedOut) {
+              windows.push({ name: "登录态", used: 0, display: "未登录，请打开 OfficeAce 登录", aside: true });
+            } else if (sub.account?.needsReauth) {
+              windows.push({ name: "登录态", used: 0, display: "已失效，请重新登录 OfficeAce", aside: true });
+            }
+            return {
+              balance: sub.unlimited ? "不限量" : `${money(sub.remaining)} 积分`,
+              windows,
+            };
+          }
+        }
+
+        // 降级: IAM 凭据直连华为云(OfficeAce 未运行) —— 云端口径(只到平台额度池)
         if (iam) {
           const r = await readSubscriptionDirect(iam);
           if (!r.ok) return { error: `直连订阅失败: ${r.error}`, windows: [] };
           const d = r.data;
-          // 云端 /v1/subscription 原始结构(与本地 API 代理的 camelCase 不同):
-          //   skus[0].quotas[].{sku_attr_code:"officeace_points", sku_value:总, current_value:已用}
-          //   bonus_skus[].{activity_id, activity_name, points}  daily 实例存在即今日已签
-          //   skus[0].{sku_name, expired_time}
           const sku = Array.isArray(d?.skus) ? d.skus[0] : null;
           const q = (sku?.quotas ?? []).find((x) => x?.sku_attr_code === "officeace_points");
           const total = Number(q?.sku_value ?? 0);
           const used = Number(q?.current_value ?? 0);
           const unlimited = d?.subscribe_status === "SUBSCRIBED" && !q;
           const remaining = unlimited ? Infinity : Math.max(0, total - used);
-          const money = (n) => (Number.isFinite(n) ? Math.round(n) : 0);
-          const daily = (Array.isArray(d?.bonus_skus) ?? []).length
-            ? (d.bonus_skus ?? []).find((b) => /checkin|daily/i.test(String(b?.activity_id ?? "")))
-            : null;
+          const daily = (Array.isArray(d?.bonus_skus) ? d.bonus_skus : []).find((b) =>
+            /checkin|daily/i.test(String(b?.activity_id ?? "")),
+          );
           const windows = [
             {
               name: "积分余额",
@@ -595,7 +647,6 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
             windows.push({
               name: "每日签到",
               used: 0,
-              // 云端在领取后把当日实例的 points 清零, 实例存在即已签
               display: `今日已签 ✓${Number(daily.points) ? ` +${money(daily.points)}` : ""}`,
               aside: true,
             });
@@ -616,67 +667,7 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
           };
         }
 
-        // 降级: 无自持凭据 -> 走 OfficeAce 本地 API(旧通道)
-        let cookie;
-        try {
-          cookie = resolveCookie(auth);
-        } catch (err) {
-          return { error: err?.message ?? String(err), windows: [] };
-        }
-
-        // 先看签到状态(只读), 不在这里补签 —— 补签交给 magpie 的 Daily check-in
-        let sub;
-        try {
-          sub = await readSubscription(makeClient(cookie));
-        } catch (err) {
-          return { error: `${OFFLINE_HINT}: ${err?.message ?? err}`, windows: [] };
-        }
-        if (!sub.ok) return { error: sub.error, windows: [] };
-
-        const money = (n) => (Number.isFinite(n) ? Math.round(n) : 0);
-        // 窗口条吃的是「已用」百分比, magpie 画出来是剩余
-        const usedPct = sub.unlimited ? 0 : Math.max(0, Math.min(100, 100 - sub.percent));
-
-        const windows = [
-          {
-            name: "积分余额",
-            used: usedPct,
-            display: sub.unlimited ? "不限量" : `${money(sub.remaining)} / ${money(sub.total)} 积分`,
-            aside: true,
-          },
-        ];
-
-        if (sub.daily) {
-          windows.push({
-            name: "每日签到",
-            used: 0,
-            display: sub.daily.claimedToday
-              ? `今日已签 ✓ +${sub.daily.points}`
-              : `今日未签（+${sub.daily.points}）`,
-            aside: true,
-          });
-        }
-
-        for (const b of sub.bonuses) {
-          if (!b.name || /checkin|daily/i.test(b.id)) continue;
-          windows.push({ name: b.name, used: 0, display: `+${b.points} 积分`, aside: true });
-        }
-
-        if (sub.plan) {
-          const until = sub.expiresAt ? ` · 至 ${String(sub.expiresAt).slice(0, 10)}` : "";
-          windows.push({ name: "套餐", used: 0, display: `${sub.plan}${until}`, aside: true });
-        }
-
-        if (sub.account?.loggedOut) {
-          windows.push({ name: "登录态", used: 0, display: "未登录，请打开 OfficeAce 登录", aside: true });
-        } else if (sub.account?.needsReauth) {
-          windows.push({ name: "登录态", used: 0, display: "已失效，请重新登录 OfficeAce", aside: true });
-        }
-
-        return {
-          balance: sub.unlimited ? "不限量" : `${money(sub.remaining)} 积分`,
-          windows,
-        };
+        return { error: "无可用凭据(本地 API 不可达且未登录)", windows: [] };
       },
 
       /**
@@ -689,7 +680,26 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
         if (!auth) throw new Error("未登录");
         const iam = iamCredentialOf(auth);
 
-        // 主路: 自持凭据直连华为云(不需要 OfficeAce)
+        // 主路: OfficeAce 本地 API —— 和官方同源(它的幂等判定/入账与界面一致)
+        let cookie = "";
+        try {
+          cookie = resolveCookie(auth);
+        } catch {}
+        if (cookie) {
+          let r = null;
+          try {
+            r = await claimBonus(makeClient(cookie));
+          } catch {
+            // 本地不可达 -> 落直连
+          }
+          if (r?.ok) {
+            // 服务端幂等: 今天领过了就回空数组, 那不是失败
+            if (!r.points) return { outcome: "done", message: "今日已签到" };
+            return { outcome: "done", credit: r.points, message: `签到 +${r.points} 积分` };
+          }
+        }
+
+        // 降级: IAM 凭据直连华为云(OfficeAce 未运行)
         if (iam) {
           const r = await claimBonusDirect(iam);
           if (!r.ok) throw new Error(`直连签到失败: ${r.error}`);
@@ -697,25 +707,8 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
           return { outcome: "done", credit: r.points, message: `签到 +${r.points} 积分` };
         }
 
-        // 降级: OfficeAce 本地 API(旧通道)
-        const cookie = resolveCookie(auth);
-
-        let r;
-        try {
-          r = await claimBonus(makeClient(cookie));
-        } catch (err) {
-          // 连不上本地 API: 抛出去让 magpie 稍后重试, 别当成「已签到」
-          throw new Error(`${OFFLINE_HINT}: ${err?.message ?? err}`);
-        }
-        if (!r.ok) throw new Error(r.error);
-
-        // 服务端幂等: 今天领过了就回空数组, 那不是失败
-        if (!r.points) return { outcome: "done", message: "今日已签到" };
-        return {
-          outcome: "done",
-          credit: r.points,
-          message: `签到 +${r.points} 积分`,
-        };
+        // 连不上本地 API 也没有直连凭据: 抛出去让 magpie 稍后重试, 别当成「已签到」
+        throw new Error(`${OFFLINE_HINT}(且无直连凭据)`);
       },
 
     },
