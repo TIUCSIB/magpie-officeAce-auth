@@ -530,28 +530,46 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
           const r = await readSubscriptionDirect(iam);
           if (!r.ok) return { error: `直连订阅失败: ${r.error}`, windows: [] };
           const d = r.data;
-          const total = Number(d?.totalCredits);
-          const used = Number(d?.usedCredits);
-          const unlimited = d?.unlimitedCredits === true || total < 0;
+          // 云端 /v1/subscription 原始结构(与本地 API 代理的 camelCase 不同):
+          //   skus[0].quotas[].{sku_attr_code:"officeace_points", sku_value:总, current_value:已用}
+          //   bonus_skus[].{activity_id, activity_name, points}  daily 实例存在即今日已签
+          //   skus[0].{sku_name, expired_time}
+          const sku = Array.isArray(d?.skus) ? d.skus[0] : null;
+          const q = (sku?.quotas ?? []).find((x) => x?.sku_attr_code === "officeace_points");
+          const total = Number(q?.sku_value ?? 0);
+          const used = Number(q?.current_value ?? 0);
+          const unlimited = d?.subscribe_status === "SUBSCRIBED" && !q;
           const remaining = unlimited ? Infinity : Math.max(0, total - used);
-          const usedPct = unlimited ? 0 : Math.max(0, Math.min(100, 100 - Math.round((remaining / total) * 100)));
           const money = (n) => (Number.isFinite(n) ? Math.round(n) : 0);
+          const daily = (Array.isArray(d?.bonus_skus) ?? []).length
+            ? (d.bonus_skus ?? []).find((b) => /checkin|daily/i.test(String(b?.activity_id ?? "")))
+            : null;
           const windows = [
             {
               name: "积分余额",
-              used: usedPct,
+              used: unlimited ? 0 : Math.max(0, Math.min(100, total ? Math.round((used / total) * 100) : 0)),
               display: unlimited ? "不限量" : `${money(remaining)} / ${money(total)} 积分`,
               aside: true,
             },
           ];
+          if (daily) {
+            windows.push({
+              name: "每日签到",
+              used: 0,
+              // 云端在领取后把当日实例的 points 清零, 实例存在即已签
+              display: `今日已签 ✓${Number(daily.points) ? ` +${money(daily.points)}` : ""}`,
+              aside: true,
+            });
+          }
           for (const b of Array.isArray(d?.bonus_skus) ? d.bonus_skus : []) {
             const id = String(b?.activity_id ?? "");
             if (!id || /checkin|daily/i.test(id)) continue;
+            if (!Number(b?.points)) continue; // 已领完的实例 points=0, 只展示还可领的
             windows.push({ name: String(b?.activity_name ?? id), used: 0, display: `+${money(b?.points)} 积分`, aside: true });
           }
-          if (d?.plan || d?.tier) {
-            const until = d?.exp_time ? ` · 至 ${String(d.exp_time).slice(0, 10)}` : "";
-            windows.push({ name: "套餐", used: 0, display: `${d.plan ?? d.tier}${until}`, aside: true });
+          if (sku?.sku_name) {
+            const until = sku?.expired_time ? ` · 至 ${String(sku.expired_time).slice(0, 10)}` : "";
+            windows.push({ name: "套餐", used: 0, display: `${sku.sku_name}${until}`, aside: true });
           }
           return {
             balance: unlimited ? "不限量" : `${money(remaining)} 积分`,

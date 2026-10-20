@@ -60,13 +60,19 @@ console.log("\n== 登录方法 (api 承载真 OAuth, 阻塞式) ==");
   check("申报了 api 方法(承载真 OAuth)", Boolean(apiM));
   check("只保留一种方法", hooks.auth.methods.length === 1);
   // 不真登录: 短超时 + 不开浏览器, 验证阻塞流能干净返回 failed
+  // 必须finally 清理: 若在宿主进程(如 magpie)内执行且 authorize 抛异常,
+  // 残留的 NO_OPEN/TIMEOUT 会让宿主后续的真实登录"不弹浏览器+秒超时"。
   process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS = "1500";
   process.env.MAGPIE_OFFICEACE_OAUTH_POLL_MS = "500";
   process.env.MAGPIE_OFFICEACE_OAUTH_NO_OPEN = "1";
-  const r = await apiM.authorize({});
-  delete process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS;
-  delete process.env.MAGPIE_OFFICEACE_OAUTH_POLL_MS;
-  delete process.env.MAGPIE_OFFICEACE_OAUTH_NO_OPEN;
+  let r;
+  try {
+    r = await apiM.authorize({});
+  } finally {
+    delete process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS;
+    delete process.env.MAGPIE_OFFICEACE_OAUTH_POLL_MS;
+    delete process.env.MAGPIE_OFFICEACE_OAUTH_NO_OPEN;
+  }
   check("阻塞 OAuth 超时干净返回 failed", r.type === "failed", JSON.stringify(r).slice(0, 160));
   check("失败给原因", typeof r.error === "string" && r.error.length > 0);
 }

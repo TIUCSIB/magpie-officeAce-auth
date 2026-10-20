@@ -1,0 +1,3 @@
+ as o}from"./askUserQuestionAutoCancel-W3Ism1J5.js";async function r(e){if(!e.ok){const a=await e.json().catch(()=>({}));throw new Error(a.error_description||a.error||`HTTP ${e.status}`)}return await e.json()}const t={"Content-Type":"application/json"},n={authorize(e){return r(o("/api/oauth/device/authorize",{method:"POST",body:JSON.stringify({provider_id:e}),headers:t}))},poll(e){return r(o(`/api/oauth/device/token?device_code=${encodeURIComponent(e)}`))},refresh(e){return r(o("/api/oauth/token/refresh",{method:"POST",body:JSON.stringify({refresh_token:e}),headers:t}))},launchBrowser(e){return r(o("/api/oauth/device/launch",{method:"POST",body:JSON.stringify({url:e}),headers:t}))}};export{n as o};
+//# sourceMappingURL=oauth-device-api-ph7-5m36.js.map
+function
