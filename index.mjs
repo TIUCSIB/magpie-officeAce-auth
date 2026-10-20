@@ -31,7 +31,7 @@ import {
   DEFAULT_AGENT,
 } from "./lib/agent.mjs";
 import { readSubscription, claimBonus, OFFLINE_HINT } from "./lib/subscription.mjs";
-import { runCloudLogin, oauthRefreshCredentials } from "./lib/oauth.mjs";
+import { startCloudAuthorize, finishCloudAuthorize, oauthRefreshCredentials } from "./lib/oauth.mjs";
 import { iamCredentialOf, readSubscriptionDirect, claimBonusDirect } from "./lib/cloud.mjs";
 
 const PROVIDER = "officeace";
@@ -401,20 +401,52 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
     auth: {
       provider: PROVIDER,
       methods: [
-        // 唯一登录方式: 真 OAuth(华为云授权码流 + PKCE + DPoP), 阻塞式完成。
+        // 唯一登录方式: 真 OAuth(华为云授权码流 + PKCE + DPoP)。
+        // 按 magpie oauth 方法契约: authorize 返回 {url, method:"auto", callback()},
+        // magpie 自己打开 url; 用户授权后 callback 轮询 code 并换 IAM 凭据。
         // 全部请求直连华为云, **完全不需要 OfficeAce 运行**。
-        // 为什么用 api 方法承载: magpie 的 oauth 后端会把 authorize 结果
-        // 序列化存储(函数丢失, 报 s.a.callback is not a function), 而 api
-        // 方法的 authorize 返回 success 会直接落库 —— 阻塞到登录完成再返回,
-        // 凭据全部走 metadata(纯数据, 序列化安全)。
+        // (曾用 api 方法阻塞承载 —— 但它的 UI 是必填 key 输入框, 用户空着点
+        //  登录只会看到 "enter the key", 根本不会调到插件。)
         {
-          type: "api",
+          type: "oauth",
           label: "OfficeAce 登录(华为云 OAuth)",
           async authorize(inputs) {
-            return runCloudLogin(inputs, { log });
+            const session = await startCloudAuthorize();
+            log?.info?.(`华为云登录页: ${session.url}`);
+            return {
+              url: session.url,
+              instructions: "在打开的华为云登录页完成登录并授权, 授权后这里会自动完成。",
+              method: "auto",
+              async callback() {
+                const r = await finishCloudAuthorize(session);
+                if (!r.ok) return { type: "failed", error: r.error };
+                return {
+                  type: "success",
+                  key: "oauth-session",
+                  refresh: r.refreshToken,
+                  access: r.accessToken,
+                  expires: r.expiresAt,
+                  accountId: r.accountName || "huawei-oauth",
+                  metadata: r.metadata,
+                };
+              },
+            };
           },
         },
       ],
+
+      // magpie 在 expires 前自动续期(0.1.684+); 失败抛 signIn:"expired" 标记重登
+      refreshLead: 10 * 60 * 1000,
+      async refresh(auth, provider) {
+        const m = await oauthRefreshCredentials(auth?.metadata ?? {});
+        log?.info?.(`OAuth 凭据已续期, 到期 ${new Date(m.expiresAt).toISOString()}`);
+        return {
+          access: m.accessToken,
+          refresh: m.refreshToken,
+          expires: m.expiresAt,
+          metadata: { ...auth.metadata, ...m },
+        };
+      },
 
       async loader(getAuth) {
         const auth = await freshAuth(await getAuth());
@@ -741,6 +773,7 @@ export const _internal = {
   completionResponse,
   sseChunk,
   assembleFromSse,
-  runCloudLogin,
+  startCloudAuthorize,
+  finishCloudAuthorize,
   oauthRefreshCredentials,
 };

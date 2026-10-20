@@ -54,26 +54,27 @@ console.log("\n== 插件 hooks ==");
 const hooks = await OfficeAcePlugin({
   client: { app: { log: (x) => console.log("   [log]", x.body.message) } },
 });
-console.log("\n== 登录方法 (api 承载真 OAuth, 阻塞式) ==");
+console.log("\n== 登录方法 (oauth 承载真 OAuth, magpie 开浏览器 + callback 收尾) ==");
 {
-  const apiM = hooks.auth.methods.find((m) => m.type === "api");
-  check("申报了 api 方法(承载真 OAuth)", Boolean(apiM));
+  const oaM = hooks.auth.methods.find((m) => m.type === "oauth");
+  check("申报了 oauth 方法(浏览器授权流)", Boolean(oaM));
   check("只保留一种方法", hooks.auth.methods.length === 1);
-  // 不真登录: 短超时 + 不开浏览器, 验证阻塞流能干净返回 failed
-  // 必须finally 清理: 若在宿主进程(如 magpie)内执行且 authorize 抛异常,
-  // 残留的 NO_OPEN/TIMEOUT 会让宿主后续的真实登录"不弹浏览器+秒超时"。
+  const d = await oaM.authorize({});
+  check("authorize 返回登录页 url", typeof d?.url === "string" && d.url.includes("auth.huaweicloud.com"), String(d?.url).slice(0, 80));
+  check("有用户说明", typeof d?.instructions === "string" && d.instructions.length > 0);
+  check("method=auto(callback 自完成)", d?.method === "auto");
+  check("callback 是函数", typeof d?.callback === "function");
+  // 不真登录: 短超时, 验证 callback 轮询超时能干净返回 failed
+  // 必须 finally 清理: 若在宿主进程(如 magpie)内执行且中途抛异常,
+  // 残留的 TIMEOUT 会让宿主后续的真实登录"秒超时"。
   process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS = "1500";
-  process.env.MAGPIE_OFFICEACE_OAUTH_POLL_MS = "500";
-  process.env.MAGPIE_OFFICEACE_OAUTH_NO_OPEN = "1";
   let r;
   try {
-    r = await apiM.authorize({});
+    r = await d.callback();
   } finally {
     delete process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS;
-    delete process.env.MAGPIE_OFFICEACE_OAUTH_POLL_MS;
-    delete process.env.MAGPIE_OFFICEACE_OAUTH_NO_OPEN;
   }
-  check("阻塞 OAuth 超时干净返回 failed", r.type === "failed", JSON.stringify(r).slice(0, 160));
+  check("callback 超时干净返回 failed", r.type === "failed", JSON.stringify(r).slice(0, 160));
   check("失败给原因", typeof r.error === "string" && r.error.length > 0);
 }
 

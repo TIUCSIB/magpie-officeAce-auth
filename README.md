@@ -114,25 +114,28 @@ OfficeAce 界面上的 **快速 / 均衡 / 极致** 就对应这套档位（快�
 
 ## 它是怎么登录的
 
-**真 OAuth** —— 华为云统一认证授权码流（RFC 6749 + PKCE），桌面端同款。
+**真 OAuth** —— 华为云统一认证授权码流（RFC 6749 + PKCE + DPoP），云端自持，完全不依赖 OfficeAce。
 
-magpie 点登录时：
+magpie 点登录时（`type: "oauth"` 方法，magpie 原生浏览器授权 UI，无输入框）：
 
-1. `POST /api/login/authorize`（本地 API）→ 拿到华为云登录页
-   `https://auth.huaweicloud.com/authui/login.html?service=…`，内嵌完整 OAuth 参数
-   （client_id=`pdp5_for_agentarts`、PKCE S256、scope=openid、state、response_type=code）；
-2. magpie 用系统浏览器打开该页 → **你在华为云登录页输入华为账号授权**；
-3. 华为云完成云端回调后，插件轮询 `GET /api/login/oauth/poll?state=…`
-   （未完成返回 202 not-ready，完成后返回授权码）；
-4. `POST /api/login/callback {code, state}` → 本机会话落盘，登录完成。
+1. `authorize` 生成 state + PKCE + DPoP 密钥，返回华为云登录页 URL
+   （`https://auth.huaweicloud.com/authui/login.html?service=…`，内嵌 OAuth 参数：
+   client_id=`pdp5_for_agentarts`、PKCE S256、scope=openid、state、response_type=code）；
+2. **magpie 自己打开浏览器** → 你在华为云登录页输入华为账号授权；
+3. `callback()`（`method:"auto"`）轮询云端 `GET /v1/claw/auth/code?state=…`
+   （未完成 202，完成后返回授权码；云端的 callback 收到浏览器重定向后即放行）；
+4. DPoP 换 `POST https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens`
+   → IAM 临时凭据（AK/SK/securityToken）+ refresh_token，magpie 落库为 oauth 型账号。
 
-也就是：**浏览器里登录的是华为云账号（真 OAuth），插件拿到的是 session 就位信号，
-凭据仍由 OfficeAce 本机会话承载**（模型网关 AK/SK 与 oc_sid 不变）。
-要求：OfficeAce 桌面端在运行（本地 API 提供 authorize/poll/callback 三个端点）。
+凭据续期：插件提供 `auth.refresh` 钩子（`refreshLead` 10 分钟）——magpie 在
+IAM 凭据到期前自动用 refresh_token + 同一对 DPoP 密钥换新（refresh_token
+绑定签发时的 DPoP 公钥指纹，密钥随账号 metadata 保存）。
+
+要求：**什么都不需要** —— 不需要 OfficeAce 运行，也不需要本机登录态。
 
 > **排错**：登录流程每一步都写 `%TEMP%\magpie-officeace-oauth.log`（发起地址、
 > state、轮询/回调结果）。改动插件后 magpie 不会热更，必须彻底重启
-> （托盘退出，不是关窗口）。
+> （托盘退出，不是关窗口）。独立复现工具：`bun tools/diag-login-full.mjs`。
 
 而其中其实有**两套凭据，各干各的活**：
 
