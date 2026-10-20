@@ -40,6 +40,21 @@ const CLIENT_BASE = `https://officeace.local/v1`; // 占位; 真实请求由 loa
 // magpie 不落库 authorize() 的 accountId(api 类方法), 插件自己写一次就够
 let accountPersisted = false;
 
+/**
+ * 模型网关凭据, 按优先级:
+ * 1. OAuth 账号 metadata 里的 gatewayBase/gatewayAuthorization —— 登录时从
+ *    订阅接口 model_infos 抓的 AppKey/AppSecret 对(实测这是网关唯一认的凭据;
+ *    IAM AK/SK 打网关 401 AppKey or AppSecret)
+ * 2. 本机 routing_state(装过 OfficeAce 就有)
+ */
+function gatewayOf(auth) {
+  const m = auth?.metadata ?? {};
+  if (m.gatewayBase && m.gatewayAuthorization) {
+    return { base: m.gatewayBase, authorization: m.gatewayAuthorization, source: "oauth-gateway" };
+  }
+  return discoverGateway();
+}
+
 // ── 模型能力表 ─────────────────────────────────────────────────────────
 // 依据 OfficeAce 自带模型目录里的 labels / capabilities
 // (packages/api/dist/index.js 的模型元数据: "Function Call" / "198K" / "1M" 等)
@@ -450,16 +465,8 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
 
       async loader(getAuth) {
         const auth = await freshAuth(await getAuth());
-        // 自持 IAM 凭据(OAuth 登录产出)优先 —— 不依赖 OfficeAce 任何文件/进程
-        const iam = iamCredentialOf(auth);
-        const gw = iam
-          ? {
-              base: process.env.MAGPIE_OFFICEACE_GATEWAY_BASE
-                || "https://modelgw-0009.officeace.cn-southwest-2.huaweicloud-agentarts.com/v2",
-              authorization: `Basic ${Buffer.from(`${iam.ak}:${iam.sk}`).toString("base64")}`,
-              source: "oauth-iam",
-            }
-          : discoverGateway();
+        // 网关凭据: OAuth 登录抓的 AppKey/Secret > 本机 routing_state
+        const gw = gatewayOf(auth);
         // 本机会话(仅 agent 兜底链路需要; 无 OAuth 凭据时签到/订阅的降级通道)
         let cookie = "";
         try {
@@ -470,7 +477,7 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
         // 注意别叫 client: 外层那个是 magpie 的运行期 client, 有 .auth.set
         const oa = makeClient(cookie);
 
-        log.info(`网关直连: ${gw.base} (凭据来源 ${gw.source}${iam ? " [自持 IAM]" : ""})`);
+        log.info(`网关直连: ${gw.base} (凭据来源 ${gw.source})`);
 
         // magpie 不会把 authorize() 返回的 accountId 落库(api 类方法),
         // 得插件自己写一次; 只试一次, 免得每个请求都写盘。
@@ -732,7 +739,7 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
 
         let ids;
         try {
-          const gw = discoverGateway();
+          const gw = gatewayOf(auth);
           const r = await fetch(gatewayUrl(gw, "/models"), { headers: gatewayHeaders(gw) });
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           const all = ((await r.json())?.data ?? []).map((m) => m?.id ?? m?.model).filter(Boolean);

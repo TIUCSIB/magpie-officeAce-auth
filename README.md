@@ -351,12 +351,19 @@ magpie provider test officeace
 
 ### 凭据是怎么来的
 
-按顺序找，第一个命中就用：
+**模型网关**（打 chat/completions 的 Basic 头），按顺序找，第一个命中就用：
 
-1. 环境变量 `MAGPIE_OFFICEACE_GATEWAY_AUTH`
-2. `routing_state/users/*/models.json` 里 `custom_headers.Authorization`
-   （**推荐**，OfficeAce 轮换凭据时会自动跟上）
-3. 本机安装下发的那份常量（`lib/gateway.mjs` 的 `BAKED_AUTH`）
+1. OAuth 账号 metadata 里的 `gatewayAuthorization` —— 登录时从订阅接口
+   `model_infos[0].model_auth_info` 抓的 AppKey/AppSecret 对
+   （**实测这是网关唯一认的凭据**；IAM OAuth 的 AK/SK 打网关会 401
+   `AppKey or AppSecret`，别混用）
+2. 环境变量 `MAGPIE_OFFICEACE_GATEWAY_AUTH`
+3. `routing_state/users/*/models.json` 里 `custom_headers.Authorization`
+4. 本机安装下发的那份常量（`lib/gateway.mjs` 的 `BAKED_AUTH`）
+
+**IAM 临时凭据**（订阅/签到的 V11 签名用）：OAuth 登录产出，存在账号
+metadata（AK/SK/securityToken + DPoP 密钥），到期前由 magpie 的
+`auth.refresh` 钩子自动续期。
 
 智能体链路另外需要 `oc_sid` 登录态：`~/.office-claw/session.cookie`，
 `OC-DPAPI-1` 开头，DPAPI 密文解出来是 `{value, expires}`，用 PowerShell 解。
