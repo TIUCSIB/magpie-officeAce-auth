@@ -54,46 +54,34 @@ console.log("\n== 插件 hooks ==");
 const hooks = await OfficeAcePlugin({
   client: { app: { log: (x) => console.log("   [log]", x.body.message) } },
 });
-console.log("\n== 登录方法 (oauth v3 契约) ==");
+console.log("\n== OAuth 方法 (华为云授权码流 v4) ==");
 {
   const oauth = hooks.auth.methods.find((m) => m.type === "oauth");
   check("申报了 oauth 方法", Boolean(oauth));
-  // 按官方契约: authorize 返回浏览器结果, 不返回 success/failed
+  check("只保留 oauth 方法", hooks.auth.methods.length === 1);
   const r = await oauth.authorize({});
-  check("authorize 返回浏览器结果", typeof r.url === "string" && r.url.length > 0, JSON.stringify(r).slice(0, 160));
-  check("带 method:auto", r.method === "auto");
-  check("带 instructions 与 callback", typeof r.instructions === "string" && typeof r.callback === "function");
-  // 本机会话在 -> callback 直接秒成功(等效 OAuth 静默刷新)
-  const fin = await r.callback();
-  check("callback 收尾成功", fin.type === "success", fin.error ?? "");
-  if (fin.type === "success") {
-    check("callback 成功带 key", fin.key === "auto");
-    check("callback 账号名(本机已登录)", fin.metadata?.session === "ok" ? typeof fin.accountId === "string" && fin.accountId.length > 0 : true,
-      fin.accountId ? "" : `(session=${fin.metadata?.session})`);
+  if (r.type === "failed") {
+    check("authorize 失败时给原因(OfficeAce 需在运行)", String(r.error ?? "").length > 0, r.error ?? "");
+  } else {
+    check("authorize 返回浏览器结果", typeof r.url === "string" && r.url.length > 0, JSON.stringify(r).slice(0, 140));
+    check("url 是华为云登录页", r.url.includes("auth.huaweicloud.com"), r.url?.slice(0, 100));
+    check("带 method:auto 与 callback", r.method === "auto" && typeof r.callback === "function");
+    // 不真授权: 用短超时验证 callback 轮询能干净退出(返回 failed 而非挂死)
+    const prev = process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS;
+    process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS = "1200";
+    process.env.MAGPIE_OFFICEACE_OAUTH_POLL_MS = "500";
+    const fin = await r.callback();
+    if (prev === undefined) delete process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS;
+    else process.env.MAGPIE_OFFICEACE_OAUTH_TIMEOUT_MS = prev;
+    check("callback 超时干净返回 failed", fin.type === "failed", JSON.stringify(fin).slice(0, 160));
   }
-  await new Promise((res) => setTimeout(res, 400)); // 等回环服务器关闭
-}
-{
-  const apiM = hooks.auth.methods.find((m) => m.type === "api");
-  check("api 方法仍在(备用)", Boolean(apiM));
-  const r = await apiM.authorize({ key: "auto" });
-  check("api authorize(auto) 走本机会话", ["success", "failed"].includes(r.type), r.error ?? "");
-}
-
-console.log("\n== oc_sid 编解码 ==");
-{
-  const { encodeCookie, decodeCookie } = _internal;
-  const sid = "sid_abc=123;foo";
-  check("oc_sid 编解码往返", decodeCookie(encodeCookie(sid)).cookie === sid);
-  check("auto 识别", decodeCookie("auto").kind === "auto");
-  check("明文兜底", decodeCookie(sid).cookie === sid);
 }
 
 const authz = await hooks.auth.methods[0].authorize({});
-check("oauth authorize 返回浏览器结果", typeof authz?.url === "string" && authz?.url.length > 0 && typeof authz?.callback === "function", JSON.stringify(authz).slice(0, 160));
-const authDone = await authz.callback();
-check("oauth callback 完成", authDone.type === "success", authDone.error ?? "");
-const loaded = await hooks.auth.loader(async () => ({ type: "api", key: authDone.key }));
+let authzOk = typeof authz?.url === "string" && authz?.url.length > 0 && typeof authz?.callback === "function";
+if (authz.type === "failed") authzOk = true; // App 没开时 authorize 会 failed, 单测不弹窗
+check("oauth authorize 返回浏览器结果或明确失败", authzOk, JSON.stringify(authz).slice(0, 140));
+const loaded = await hooks.auth.loader(async () => ({ type: "api", key: "auto" }));
 
 const call = (body) =>
   loaded.fetch("https://officeace.local/v1/chat/completions", {

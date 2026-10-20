@@ -31,7 +31,7 @@ import {
   DEFAULT_AGENT,
 } from "./lib/agent.mjs";
 import { readSubscription, claimBonus, OFFLINE_HINT } from "./lib/subscription.mjs";
-import { oauthAuthorize, encodeCookie, decodeCookie } from "./lib/oauth.mjs";
+import { oauthAuthorize } from "./lib/oauth.mjs";
 
 const PROVIDER = "officeace";
 const CLIENT_BASE = `https://officeace.local/v1`; // 占位; 真实请求由 loader 的 fetch 接管
@@ -381,87 +381,16 @@ export const OfficeAcePlugin = async ({ client } = {}) => {
     auth: {
       provider: PROVIDER,
       methods: [
-        // oauth: 按官方契约(methods 文档)实现 —— authorize 永远返回浏览器
-        // 结果 {url, instructions, method:"auto", callback}, 成功只在 callback()
-        // 里返回。回环页由 magpie 用系统浏览器打开; callback 先看本机会话
-        // (等效 OAuth 静默刷新, 秒成功), 不在则等页面信号。
+        // 唯一登录方式: 真 OAuth(华为云统一认证授权码流 + PKCE)。
+        // authorize 返回浏览器结果 {url, method:"auto", instructions, callback}:
+        //   url = auth.huaweicloud.com 登录页(magpie 用系统浏览器打开)
+        //   callback = 轮询 /api/login/oauth/poll?state= 直到授权码就位,
+        //              POST /api/login/callback {code,state} 完成本机会话
         {
           type: "oauth",
-          label: "OfficeAce 登录(浏览器/本机会话)",
-          placeholder: "自动读取本机登录态",
+          label: "OfficeAce 登录(华为云 OAuth)",
           async authorize(inputs) {
             return oauthAuthorize(inputs, { log });
-          },
-        },
-        // api: 备用, 直接粘 oc_sid / auto
-        {
-          type: "api",
-          label: "OfficeAce 本机登录态",
-          placeholder: "填 auto 自动读取本机登录态；或粘贴 oc_sid",
-          async authorize(inputs) {
-            const given = String(inputs?.key ?? "").trim();
-            // magpie 的登录框不接受空值, 所以给一个显式的 "auto";
-            // 留空也按 auto 处理, 免得宿主行为不一致时卡住。
-            const useAuto = !given || /^(auto|本机|自动)$/i.test(given);
-
-            // 直连链路只依赖磁盘上的网关凭据, 不需要 OfficeAce 正在运行;
-            // 登录态(oc_sid)只有智能体兜底链路和积分/签到用得上, 拿不到就降级。
-            const gw = discoverGateway();
-            let cookie = "";
-            let cookieNote = "";
-            if (!useAuto) {
-              cookie = given;
-            } else {
-              try {
-                cookie = discoverSession().cookie;
-              } catch (err) {
-                cookieNote = err?.message ?? String(err);
-              }
-            }
-
-            if (!gw.authorization && !cookie) {
-              return {
-                type: "failed",
-                error: `既找不到网关凭据也找不到登录态: ${cookieNote}`,
-              };
-            }
-
-            // 向本地 API 问一下账号名, 让 magpie 显示 "某某" 而不是 cookie 末四位。
-            // 手动粘贴的 cookie 也走这条, 不然那一路永远只有 "API key"。
-            // App 没开也继续(直连不需要它), 只是 accountId 留空。
-            let accountId = "";
-            let session = cookie ? "ok" : `unavailable: ${cookieNote}`;
-            let needsReauth = false;
-            if (cookie) {
-              try {
-                const info = await makeClient(cookie).isLogin();
-                const d = info.data;
-                if (d?.islogin) {
-                  accountId = String(d.userName ?? "").trim();
-                  needsReauth = d.needsReauth === true;
-                  if (needsReauth) session = "needs-reauth";
-                } else if (d) {
-                  session = "not-logged-in";
-                }
-              } catch {
-                session = "local-api-unreachable";
-              }
-            }
-
-            return {
-              type: "success",
-              // auto 路径回一个稳定哨兵, 不回解出来的 cookie ——
-              // 否则 cookie 每轮换一次, magpie 就多出一个账号, 模型挑选也跟着重置。
-              // resolveCookie() 会在真正用到时再解析成当前 cookie。
-              key: useAuto ? "auto" : cookie,
-              ...(accountId ? { accountId } : {}),
-              metadata: {
-                gateway: gw.base,
-                gatewayAuth: gw.source,
-                session,
-                ...(needsReauth ? { needsReauth: true } : {}),
-              },
-            };
           },
         },
       ],
@@ -716,6 +645,4 @@ export const _internal = {
   sseChunk,
   assembleFromSse,
   oauthAuthorize,
-  encodeCookie,
-  decodeCookie,
 };

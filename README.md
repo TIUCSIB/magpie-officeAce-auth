@@ -114,19 +114,25 @@ OfficeAce 界面上的 **快速 / 均衡 / 极致** 就对应这套档位（快�
 
 ## 它是怎么登录的
 
-magpie 的插件登录方式有 `oauth` 和 `api` 两种。本插件**两个都申报**，
-默认 `oauth`（列表第一位，行为和 WorkBuddy 等社区插件一致）：
+**真 OAuth** —— 华为云统一认证授权码流（RFC 6749 + PKCE），桌面端同款。
 
-| 方法 | 流程 | 适用 |
-| --- | --- | --- |
-| **oauth**（默认） | 按官方契约：`authorize()` 返回 `{url, instructions, method:"auto", callback}`；magpie 用系统浏览器打开 `url`（本插件的 127.0.0.1 回环页）；`callback()` 先看本机会话（等效 OAuth 静默刷新）→ 有就秒成功，没有则等页面信号（登录 OfficeAce 自动完成 / 页面粘 `oc_sid`） | 日常。`accountId` 随成功结果落库，账号名一劳永逸 |
-| **api**（备用） | `auto` 自动读本机或粘贴 `oc_sid`；`accountId` 由插件 loader 补写落库 | 兼容/无浏览器场景 |
+magpie 点登录时：
 
-> **契约要点（踩过的坑）**：magpie 的 oauth 后端**不认 `authorize` 直接返回
-> `success`**——它把任何返回值都挂到 session 上，完成只能靠结果对象上的
-> `callback()`。所以成功永远只在 `callback()` 里返回。
-> 早期版本让 `authorize` 走 fast path 返回 success，现象就是「已打开登录页」
-> 出现但流程挂起/报 `s.a.callback is not a function`。
+1. `POST /api/login/authorize`（本地 API）→ 拿到华为云登录页
+   `https://auth.huaweicloud.com/authui/login.html?service=…`，内嵌完整 OAuth 参数
+   （client_id=`pdp5_for_agentarts`、PKCE S256、scope=openid、state、response_type=code）；
+2. magpie 用系统浏览器打开该页 → **你在华为云登录页输入华为账号授权**；
+3. 华为云完成云端回调后，插件轮询 `GET /api/login/oauth/poll?state=…`
+   （未完成返回 202 not-ready，完成后返回授权码）；
+4. `POST /api/login/callback {code, state}` → 本机会话落盘，登录完成。
+
+也就是：**浏览器里登录的是华为云账号（真 OAuth），插件拿到的是 session 就位信号，
+凭据仍由 OfficeAce 本机会话承载**（模型网关 AK/SK 与 oc_sid 不变）。
+要求：OfficeAce 桌面端在运行（本地 API 提供 authorize/poll/callback 三个端点）。
+
+> **排错**：登录流程每一步都写 `%TEMP%\magpie-officeace-oauth.log`（发起地址、
+> state、轮询/回调结果）。改动插件后 magpie 不会热更，必须彻底重启
+> （托盘退出，不是关窗口）。
 
 而其中其实有**两套凭据，各干各的活**：
 
@@ -142,10 +148,8 @@ magpie 的插件登录方式有 `oauth` 和 `api` 两种。本插件**两个都�
 `authorize()` 的行为：留空就自动读本机，读到了就向 `/api/islogin` 问一下
 `userName`（顺便看 `needsReauth`），把账号名记进 magpie。
 
-> 小坑：magpie **不会**把 `api` 类方法 `authorize()` 返回的 `accountId` 落库
-> （`oauth` 类的会），所以插件在 `loader` 里调一次 `client.auth.set` 补写，
-> 账号那一栏显示账号名而不是 `API key …末四位`。本插件只有 `api` 方法，
-> 这套补写就是它的落库路径。
+> 小坑：magpie 的 oauth 成功结果带 `accountId` 会自动落库，
+> 账号那一栏正常显示账号名。
 
 ### 为什么不用 oauth
 
@@ -318,12 +322,11 @@ SDK 的 header 清洗和某些代理模式下的字段错位。
 
 ```bash
 magpie plugin add /path/to/magpie-officeAce-auth
-magpie plugin login officeace        # 默认 oauth 方法, 本机会话在就秒过
+magpie plugin login officeace     # 默认(唯一)的 oauth 方法, 弹华为云登录页
 magpie provider test officeace
 ```
 
-登录框里只有一种方法（`api` 本机登录态）：留空或用 `auto` 都会自动读本机会话，
-秒完成；没本机会话时直接粘贴 `oc_sid` 即可。
+登录时浏览器会打开华为云登录页（真 OAuth）；OfficeAce 桌面端需在运行。
 
 然后在 magpie 里把某个 agent 的模型设成 `officeace/glm-5.2` 之类。
 
