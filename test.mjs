@@ -73,6 +73,7 @@ console.log("\n== oauth 方法 (authorize 行为) ==");
   check("oauth 方法在第一位", hooks.auth.methods[0].type === "oauth");
   const r = await oauth.authorize({ token: "auto" });
   check("oauth authorize(auto) 走本机会话", ["success", "failed"].includes(r.type), r.error ?? "");
+  check("oauth 不返回浏览器结果(绕开 magpie 的 callback 丢函数 bug)", r.type !== "browser");
   if (r.type === "success") {
     check("oauth 成功带 key", r.key === "auto");
     check("oauth 成功带账号名(本机已登录)", r.metadata?.session === "ok" ? typeof r.accountId === "string" && r.accountId.length > 0 : true,
